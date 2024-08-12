@@ -4,14 +4,24 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+
+	"github.com/vladimir-29/go_final_project/database"
+
+	_ "modernc.org/sqlite" // SQLite3 driver
 )
 
 func main() {
 
 	// Инициализация базы данных
-	if err := InitializeDatabase(); err != nil {
+	if err := database.InitializeDatabase(); err != nil {
 		log.Fatalf("Failed to initialize database: %v\n", err)
 	}
+
+	db, err := database.NewDatabase("./scheduler.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer database.Close(db)
 
 	// Директория для статических файлов веб-приложения
 	webDir := "./web"
@@ -38,27 +48,34 @@ func main() {
 		}
 	})
 
-	// Обработчик для API запросов
-	http.HandleFunc("/api/tasks", GetTasksHandler)     // Получение списка задач
-	http.HandleFunc("/api/task/done", TaskDoneHandler) // Завершение задачи
-	http.HandleFunc("/api/nextdate", NextDateHandler)  // Получение следующей даты
-	http.HandleFunc("/api/task", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			GetTaskByIDHandler(w, r) // Получение задачи по ID
-		case http.MethodPost:
-			AddTaskHandler(w, r) // Добавление новой задачи
-		case http.MethodPut:
-			UpdateTaskHandler(w, r) // Обновление задачи
-		case http.MethodDelete:
-			DeleteTaskHandler(w, r) // Удаление задачи
-		default:
-			http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
-		}
+	// /api/tasks - Получение списка задач (только GET запросы)
+	http.HandleFunc("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		GetTasksHandler(db, w, r)
 	})
 
+	// /api/task/done - Завершение задачи (только POST запросы)
+	http.HandleFunc("POST /api/task/done", func(w http.ResponseWriter, r *http.Request) {
+		TaskDoneHandler(db, w, r)
+	})
+	// /api/task - Обработка различных HTTP методов (GET, POST, PUT, DELETE)
+	http.HandleFunc("GET /api/task", func(w http.ResponseWriter, r *http.Request) {
+		GetTaskByIDHandler(db, w, r)
+	})
+	http.HandleFunc("POST /api/task", func(w http.ResponseWriter, r *http.Request) {
+		AddTaskHandler(db, w, r)
+	})
+	http.HandleFunc("PUT /api/task", func(w http.ResponseWriter, r *http.Request) {
+		UpdateTaskHandler(db, w, r)
+	})
+	http.HandleFunc("DELETE /api/task", func(w http.ResponseWriter, r *http.Request) {
+		DeleteTaskHandler(db, w, r)
+	})
+
+	// /api/nextdate - Получение следующей даты (только GET запросы)
+	http.HandleFunc("GET /api/nextdate", NextDateHandler)
+
 	// Запуск HTTP сервера
-	err := http.ListenAndServe("localhost:7540", nil)
+	err = http.ListenAndServe("localhost:7540", nil)
 	if err != nil {
 		panic(err)
 	}

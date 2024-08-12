@@ -3,10 +3,14 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/vladimir-29/go_final_project/database"
+	"github.com/vladimir-29/go_final_project/models"
 
 	_ "modernc.org/sqlite" // SQLite3 driver
 )
@@ -15,17 +19,17 @@ import (
 func writeErrorResponse(w http.ResponseWriter, errorMsg string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: errorMsg})
+	json.NewEncoder(w).Encode(models.ErrorResponse{Error: errorMsg})
 }
 
 // AddTaskHandler обрабатывает POST-запросы для добавления новой задачи
-func AddTaskHandler(w http.ResponseWriter, r *http.Request) {
+func AddTaskHandler(db *database.Database, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErrorResponse(w, "AddTaskHandler(): Method not supported", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var task Task
+	var task models.Task
 	err := json.NewDecoder(r.Body).Decode(&task)
 	if err != nil {
 		writeErrorResponse(w, "AddTaskHandler(): JSON deserialization error", http.StatusBadRequest)
@@ -73,16 +77,8 @@ func AddTaskHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dbPath := "./scheduler.db"
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		writeErrorResponse(w, "AddTaskHandler(): Error opening database", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
-
 	query := "INSERT INTO scheduler (date, title, comment, repeat) VALUES (?, ?, ?, ?)"
-	res, err := db.Exec(query, task.Date, task.Title, task.Comment, task.Repeat)
+	res, err := db.Conn.Exec(query, task.Date, task.Title, task.Comment, task.Repeat)
 	if err != nil {
 		writeErrorResponse(w, "AddTaskHandler(): Error executing request", http.StatusInternalServerError)
 		return
@@ -131,15 +127,8 @@ func NextDateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTasksHandler обрабатывает запросы на получение списка задач
-func GetTasksHandler(w http.ResponseWriter, r *http.Request) {
-	db, err := sql.Open("sqlite", "./scheduler.db")
-	if err != nil {
-		writeErrorResponse(w, "Ошибка открытия базы данных", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
-
-	tasks, status, err := GetTasks(db, 50)
+func GetTasksHandler(db *database.Database, w http.ResponseWriter, r *http.Request) {
+	tasks, status, err := database.GetTasks(db.Conn, 50)
 	if err != nil {
 		writeErrorResponse(w, err.Error(), status)
 		return
@@ -151,21 +140,21 @@ func GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTaskByIDHandler обрабатывает запросы на получение задачи по ID
-func GetTaskByIDHandler(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if id == "" {
+func GetTaskByIDHandler(db *database.Database, w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
 		writeErrorResponse(w, "Не указан идентификатор", http.StatusBadRequest)
 		return
 	}
 
-	db, err := sql.Open("sqlite", "./scheduler.db")
+	// Преобразование строки в int64
+	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeErrorResponse(w, "Ошибка открытия базы данных", http.StatusInternalServerError)
+		writeErrorResponse(w, "Некорректный идентификатор", http.StatusBadRequest)
 		return
 	}
-	defer db.Close()
 
-	task, status, err := GetTaskByID(db, id)
+	task, status, err := database.GetTaskByID(db.Conn, id)
 	if err != nil {
 		writeErrorResponse(w, err.Error(), status)
 		return
@@ -177,13 +166,13 @@ func GetTaskByIDHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateTaskHandler обрабатывает PUT-запросы на обновление задачи
-func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
+func UpdateTaskHandler(db *database.Database, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		writeErrorResponse(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var task Task
+	var task models.Task
 	err := json.NewDecoder(r.Body).Decode(&task)
 	if err != nil {
 		writeErrorResponse(w, "Ошибка десериализации JSON", http.StatusBadRequest)
@@ -236,16 +225,9 @@ func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		task.Date = nextDate
 	}
 
-	db, err := sql.Open("sqlite", "./scheduler.db")
-	if err != nil {
-		writeErrorResponse(w, fmt.Sprintf("Ошибка открытия базы данных: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
-
 	// Обновление задачи
 	query := "UPDATE scheduler SET date = ?, title = ?, comment = ?, repeat = ? WHERE id = ?"
-	result, err := db.Exec(query, task.Date, task.Title, task.Comment, task.Repeat, task.ID)
+	result, err := db.Conn.Exec(query, task.Date, task.Title, task.Comment, task.Repeat, task.ID)
 	if err != nil {
 		writeErrorResponse(w, fmt.Sprintf("Ошибка обновления задачи: %v", err), http.StatusInternalServerError)
 		return
@@ -262,14 +244,13 @@ func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Успешное обновление
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("{}"))
 }
 
 // TaskDoneHandler обрабатывает запросы для завершения задачи
-func TaskDoneHandler(w http.ResponseWriter, r *http.Request) {
+func TaskDoneHandler(db *database.Database, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErrorResponse(w, "Method not supported", http.StatusBadRequest)
 		return
@@ -287,18 +268,10 @@ func TaskDoneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbPath := "./scheduler.db"
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		writeErrorResponse(w, "Failed to open database", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
-
-	var task Task
+	var task models.Task
 	var id int64
-	err = db.QueryRow("SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?", idParamNum).Scan(&id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
-	if err == sql.ErrNoRows {
+	err = db.Conn.QueryRow("SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?", idParamNum).Scan(&id, &task.Date, &task.Title, &task.Comment, &task.Repeat)
+	if errors.Is(err, sql.ErrNoRows) {
 		writeErrorResponse(w, "Task not found", http.StatusNotFound)
 		return
 	} else if err != nil {
@@ -315,13 +288,13 @@ func TaskDoneHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		task.Date = newTaskDate
 
-		_, err = db.Exec("UPDATE scheduler SET date = ?, title = ?, comment = ?, repeat = ? WHERE id = ?", task.Date, task.Title, task.Comment, task.Repeat, id)
+		_, err = db.Conn.Exec("UPDATE scheduler SET date = ?, title = ?, comment = ?, repeat = ? WHERE id = ?", task.Date, task.Title, task.Comment, task.Repeat, id)
 		if err != nil {
 			writeErrorResponse(w, "Error updating task", http.StatusInternalServerError)
 			return
 		}
 	} else {
-		result, err := db.Exec("DELETE FROM scheduler WHERE id = ?", id)
+		result, err := db.Conn.Exec("DELETE FROM scheduler WHERE id = ?", id)
 		if err != nil {
 			writeErrorResponse(w, "Error deleting task", http.StatusInternalServerError)
 			return
@@ -343,7 +316,7 @@ func TaskDoneHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteTaskHandler обрабатывает DELETE-запросы для удаления задачи
-func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
+func DeleteTaskHandler(db *database.Database, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeErrorResponse(w, "DeleteTaskHandler(): method not supported", http.StatusMethodNotAllowed)
 		return
@@ -361,16 +334,8 @@ func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbPath := "./scheduler.db"
-	database, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		writeErrorResponse(w, fmt.Sprintf("Ошибка открытия базы данных: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer database.Close()
-
 	query := "DELETE FROM scheduler WHERE id = ?"
-	result, err := database.Exec(query, idParamNum)
+	result, err := db.Conn.Exec(query, idParamNum)
 	if err != nil {
 		writeErrorResponse(w, "DeleteTaskHandler(): Error deleting task", http.StatusInternalServerError)
 		return

@@ -11,7 +11,7 @@ func NextDate(now time.Time, date string, repeat string) (string, error) {
 
 	startDate, err := time.Parse(layout, date)
 	if err != nil {
-		return "", fmt.Errorf("некорректная дата: %v", err)
+		return "", fmt.Errorf("некорректная дата: %w", err)
 	}
 
 	if repeat == "" {
@@ -22,7 +22,7 @@ func NextDate(now time.Time, date string, repeat string) (string, error) {
 		var days int
 		_, err := fmt.Sscanf(repeat, "d %d", &days)
 		if err != nil {
-			return "", fmt.Errorf("некорректное правило повторения: %v", err)
+			return "", fmt.Errorf("некорректное правило повторения: %w", err)
 		}
 		if days <= 0 || days > 400 {
 			return "", fmt.Errorf("недопустимое количество дней: %d", days)
